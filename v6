@@ -1,0 +1,113 @@
+from fasthtml.common import *
+from time import time
+
+def render(thread):
+    tid = f'thread-{thread.id}'
+    return Li(H4(thread.title),
+             P(thread.content),
+             Div(
+                 A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
+                   style='margin-right: 10px;'),
+                 A('Delete', hx_delete=f'/delete/{thread.id}',
+                   hx_target=f'#{tid}', hx_swap='outerHTML',
+                   style='color: red;',
+                   onclick="return confirm('Are you sure you want to delete this thread?')"
+                 ),
+                 style='margin-bottom: 10px;'
+             ),
+             P(f'Posted: {format_time(thread.created_at)}'),  # Add timestamp display
+             id=tid,
+             class_='thread-item')
+
+def format_time(timestamp):
+    if not timestamp:
+        return 'Unknown time'
+    from datetime import datetime
+    return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+
+app, rt, threads, Thread = fast_app('forum.db', live=True, render = render,
+                                  id = int, title = str, content = str, 
+                                  created_at = float, pk = 'id')
+
+def mk_form():
+    return Form(
+        Group(
+            Input(placeholder='Thread title', id='title', required=True),
+            Input(placeholder='Thread content', id='content', required=True,
+                 style='height: 100px; width: 100%;'),
+            Button('Post Thread')
+        ),
+        hx_post = '/',
+        hx_target = '#thread-list',
+        hx_swap = 'afterbegin'
+    )
+
+def mk_edit_form(thread):
+    return Div(
+        A('← Back to Home', hx_get='/', hx_target='body', 
+          style='display: block; margin-bottom: 20px; text-decoration: none;'),
+        Form(
+            Group(
+                Label('Title:'),
+                Input(name='title', required=True, value=thread.title,
+                     style='width: 100%; margin-bottom: 10px;'),
+                Label('Content:'),
+                Input(name='content', required=True,
+                     value=thread.content,
+                     style='height: 100px; width: 100%; margin-bottom: 10px;'),
+                Div(
+                    Button('Save Changes', style='margin-right: 10px;'),
+                    A('Cancel', hx_get='/', hx_target='body', class_='cancel-link'),
+                    style='margin-top: 10px;'
+                )
+            ),
+            hx_post = f'/edit/{thread.id}',
+            hx_target = 'body'
+        )
+    )
+
+@rt('/')
+def get():
+    # Get latest 20 threads, handling None created_at values
+    all_threads = threads()
+    # Set a default timestamp for threads without created_at
+    for thread in all_threads:
+        if thread.created_at is None:
+            thread.created_at = 0  # Default to epoch start
+    latest_threads = sorted(all_threads, 
+                          key=lambda t: t.created_at or 0,  # Use 0 if None
+                          reverse=True)[:20]
+    
+    return Titled('Forum',
+                 Card(
+                     mk_form(),
+                     Ul(*latest_threads, id='thread-list', class_='thread-list')
+                 ))
+
+@rt('/')
+def post(thread: Thread):
+    thread.created_at = time()  # Add timestamp
+    new_thread = threads.insert(thread)
+    return render(new_thread)
+
+@rt('/edit/{tid}')
+def get(tid: int):
+    thread = threads[tid]
+    return Titled('Edit Thread',
+                 Card(mk_edit_form(thread)))
+
+@rt('/edit/{tid}')
+def post(tid: int, thread: Thread):
+    existing = threads[tid]
+    existing.title = thread.title
+    existing.content = thread.content
+    # Don't update created_at when editing
+    threads.update(existing)
+    return Redirect('/')  # Properly redirect to home page
+
+@rt('/delete/{tid}')
+def delete(tid: int):
+    threads.delete(tid)
+    return ''  # Return empty response as the element will be removed from DOM
+
+serve()
