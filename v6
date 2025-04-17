@@ -3,7 +3,10 @@ from time import time
 
 def render(thread):
     tid = f'thread-{thread.id}'
-    return Li(H4(thread.title),
+    return Li(H4(A(thread.title, 
+                   hx_get=f'/thread/{thread.id}',
+                   hx_target='body',
+                   style='text-decoration: none; color: inherit; cursor: pointer;')),
              P(thread.content),
              Div(
                  A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
@@ -109,5 +112,27 @@ def post(tid: int, thread: Thread):
 def delete(tid: int):
     threads.delete(tid)
     return ''  # Return empty response as the element will be removed from DOM
+
+@rt('/thread/{tid}')
+def get(tid: int):
+    thread = threads[tid]
+    return Titled(thread.title,
+                 Card(
+                     A('← Back to Home', hx_get='/', hx_target='body',
+                       style='display: block; margin-bottom: 20px; text-decoration: none;'),
+                     H2(thread.title),
+                     P(thread.content, style='margin: 20px 0;'),
+                     P(f'Posted: {format_time(thread.created_at)}',
+                       style='color: #666;'),
+                     Div(
+                         A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
+                           style='margin-right: 10px;'),
+                         A('Delete', hx_delete=f'/delete/{thread.id}',
+                           hx_target='body', hx_swap='outerHTML',
+                           style='color: red;',
+                           onclick="return confirm('Are you sure you want to delete this thread?')"
+                         )
+                     )
+                 ))
 
 serve()
