@@ -1,12 +1,23 @@
 from fasthtml.common import *
 from time import time
 
+# Add styles for thread title links
+Style('''
+.thread-title {
+    color: #0066cc;
+}
+.thread-title:visited {
+    color: #666666;
+}
+''')
+
 def render(thread):
     tid = f'thread-{thread.id}'
     return Li(H4(A(thread.title, 
                    hx_get=f'/thread/{thread.id}',
                    hx_target='body',
-                   style='text-decoration: none; color: inherit; cursor: pointer;')),
+                   style='text-decoration: none; cursor: pointer;',
+                   class_='thread-title')),
              P(thread.content),
              Div(
                  A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
