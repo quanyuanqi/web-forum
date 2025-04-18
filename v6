@@ -19,6 +19,7 @@ def render(thread):
                    style='text-decoration: none; cursor: pointer;',
                    class_='thread-title')),
              P(thread.content),
+             P(f'Posted by: {thread.email}'),  # Add email display
              Div(
                  A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
                    style='margin-right: 10px;'),
@@ -41,12 +42,13 @@ def format_time(timestamp):
 
 app, rt, threads, Thread = fast_app('forum.db', live=True, render = render,
                                   id = int, title = str, content = str, 
-                                  created_at = float, pk = 'id')
+                                  created_at = float, email = str, pk = 'id')
 
 def mk_form():
     return Form(
         Group(
             Input(placeholder='Thread title', id='title', required=True),
+            Input(placeholder='Your email', id='email', type='email', required=True),  # Add email input
             Input(placeholder='Thread content', id='content', required=True,
                  style='height: 100px; width: 100%;'),
             Button('Post Thread')
@@ -64,6 +66,9 @@ def mk_edit_form(thread):
             Group(
                 Label('Title:'),
                 Input(name='title', required=True, value=thread.title,
+                     style='width: 100%; margin-bottom: 10px;'),
+                Label('Email:'),
+                Input(name='email', type='email', required=True, value=thread.email,
                      style='width: 100%; margin-bottom: 10px;'),
                 Label('Content:'),
                 Input(name='content', required=True,
@@ -133,6 +138,7 @@ def get(tid: int):
                        style='display: block; margin-bottom: 20px; text-decoration: none;'),
                      H2(thread.title),
                      P(thread.content, style='margin: 20px 0;'),
+                     P(f'Posted by: {thread.email}', style='color: #666;'),
                      P(f'Posted: {format_time(thread.created_at)}',
                        style='color: #666;'),
                      Div(
