@@ -32,12 +32,12 @@ Style('''
 # Password hashing setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def render(thread):
+def render(thread, session=None):
     tid = f'thread-{thread.id}'
     edit_delete_controls = ''
     
     # Only show edit/delete controls if user is authenticated and is the author
-    if hasattr(thread, 'author') and thread.author:
+    if session and 'auth' in session and hasattr(thread, 'author') and thread.author == session['auth']:
         edit_delete_controls = Div(
             A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
               style='margin-right: 10px;'),
@@ -232,7 +232,7 @@ def get(session):
                  header,
                  Card(
                      mk_form(session),
-                     Ul(*[render(t) for t in latest_threads], id='thread-list', class_='thread-list')
+                     Ul(*[render(t, session) for t in latest_threads], id='thread-list', class_='thread-list')
                  ))
 
 @rt('/')
@@ -243,7 +243,7 @@ def post(session, thread: Thread):
     thread.email = user_email
     thread.author = user_email
     new_thread = threads.insert(thread)
-    return render(new_thread)
+    return render(new_thread, session)
 
 @rt('/edit/{tid}')
 @basic_auth
@@ -275,9 +275,8 @@ def delete(session, tid: int):
     return ''
 
 @rt('/thread/{tid}')
-def get(tid: int):
+def get(session, tid: int):
     thread = threads[tid]
-    edit_delete_controls = ''
     
     return Titled(thread.title,
                  Card(
@@ -287,7 +286,8 @@ def get(tid: int):
                      P(thread.content, style='margin: 20px 0;'),
                      P(f'Posted by: {thread.email or "Anonymous"}', style='color: #666;'),
                      P(f'Posted: {format_time(thread.created_at)}',
-                       style='color: #666;')
+                       style='color: #666;'),
+                     render(thread, session)
                  ))
 
 serve()
