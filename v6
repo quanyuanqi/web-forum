@@ -2,6 +2,7 @@ from fasthtml.common import *
 from time import time
 from passlib.context import CryptContext
 from functools import wraps
+import os
 
 # Add styles for thread title links and auth-related elements
 Style('''
@@ -86,10 +87,39 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
 db = database('users.db')
 users = db.t.users
 
+# Create or update users table with correct schema
 if users not in db.t:
-    users.create(dict(email=str, password=str, username=str), pk='email')
-    
+    users.create({
+        'email': str,
+        'password': str,
+        'username': str,
+        'is_admin': bool
+    }, pk='email')
+
 User = users.dataclass()
+
+def create_admin_account():
+    """Create the admin account if it doesn't exist."""
+    try:
+        admin = users['admin@forum.com']
+        if not getattr(admin, 'is_admin', False):
+            admin.is_admin = True
+            admin.username = 'bigboy'  # Ensure username is set
+            admin.password = pwd_context.hash('admin123')  # Reset password
+            users.update(admin)
+            print("Admin account updated successfully")
+    except NotFoundError:
+        admin = User(
+            email='admin@forum.com',
+            username='bigboy',
+            password=pwd_context.hash('admin123'),
+            is_admin=True
+        )
+        users.insert(admin)
+        print("Admin account created successfully")
+
+# Create admin account if it doesn't exist
+create_admin_account()
 
 def find_user_by_username(username):
     """Find a user by their username."""
@@ -196,15 +226,19 @@ def get():
 def post(session, email:str, password:str):
     try:
         user = users[email]
-    except NotFoundError:
-        return "Email or password are incorrect"
-    
-    if not pwd_context.verify(password, user.password):
-        return "Email or password are incorrect"
+        print(f"Login attempt for {email}")  # Debug log
+        
+        if not pwd_context.verify(password, user.password):
+            print("Password verification failed")  # Debug log
+            return "Email or password are incorrect"
 
-    session['auth'] = user.email
-    
-    return HttpHeader('HX-Redirect', '/')
+        session['auth'] = user.email
+        print(f"Login successful for {email}")  # Debug log
+        
+        return HttpHeader('HX-Redirect', '/')
+    except NotFoundError:
+        print(f"User not found: {email}")  # Debug log
+        return "Email or password are incorrect"
 
 # Register routes
 @rt('/register')
@@ -301,6 +335,226 @@ def render_stats():
         )
     )
 
+def is_admin(session):
+    """Check if the current user is an admin."""
+    if not session or 'auth' not in session:
+        return False
+    try:
+        user = users[session['auth']]
+        return getattr(user, 'is_admin', False)
+    except NotFoundError:
+        return False
+
+def admin_required(f):
+    """Decorator to require admin access for a route."""
+    @wraps(f)
+    def wrapper(session, *args, **kwargs):
+        if not is_admin(session):
+            return Response('Admin access required', status_code=403)
+        return f(session, *args, **kwargs)
+    return wrapper
+
+# Admin management page
+@rt('/mp')
+@admin_required
+def get(session):
+    all_users = users()
+    all_threads = threads()
+    
+    return Titled('Admin Management',
+                 Card(
+                     A('← Back to Home', hx_get='/', hx_target='body', 
+                       style='display: block; margin-bottom: 20px; text-decoration: none;'),
+                     H1("Admin Management Panel"),
+                     
+                     # User Management Section
+                     Article(
+                         H2("User Management"),
+                         # Add new user form
+                         Form(
+                             H3("Add New User"),
+                             Input(id="username", placeholder="Username", required=True),
+                             Input(id="email", type="email", placeholder="Email", required=True),
+                             Input(id="password", type="password", placeholder="Password", required=True),
+                             Input(id="is_admin", type="checkbox", label="Is Admin"),
+                             Button("Add User", type="submit"),
+                             Span(id="user-error", style="color: red;"),
+                             hx_post="/mp/users/add",
+                             hx_target="#users-list",
+                             style="margin-bottom: 20px;"
+                         ),
+                         
+                         # Users list
+                         Table(
+                             Tr(
+                                 Th("Username"),
+                                 Th("Email"),
+                                 Th("Admin"),
+                                 Th("Actions")
+                             ),
+                             *[Tr(
+                                 Td(user.username),
+                                 Td(user.email),
+                                 Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                                 Td(
+                                     Button("Delete", 
+                                           hx_delete=f"/mp/users/{user.email}",
+                                           hx_target="#users-list",
+                                           style="background-color: red;")
+                                     if user.username != 'bigboy' else ''
+                                 )
+                             ) for user in all_users],
+                             id="users-list"
+                         ),
+                         style="margin-bottom: 40px;"
+                     ),
+                     
+                     # Content Management Section
+                     Article(
+                         H2("Content Management"),
+                         Table(
+                             Tr(
+                                 Th("Title"),
+                                 Th("Author"),
+                                 Th("Posted"),
+                                 Th("Actions")
+                             ),
+                             *[Tr(
+                                 Td(thread.title),
+                                 Td(getattr(users[thread.email], 'username', 'Unknown') if thread.email else 'Anonymous'),
+                                 Td(format_time(thread.created_at)),
+                                 Td(
+                                     Button("Delete", 
+                                           hx_delete=f"/mp/threads/{thread.id}",
+                                           hx_target="#threads-list",
+                                           style="background-color: red;")
+                                 )
+                             ) for thread in sorted(all_threads, key=lambda t: t.created_at or 0, reverse=True)],
+                             id="threads-list"
+                         )
+                     )
+                 ))
+
+# Admin API endpoints
+@rt('/mp/users/add')
+@admin_required
+def post(session, username: str, email: str, password: str, is_admin: bool = False):
+    try:
+        # Check if user already exists
+        try:
+            users[email]
+            return "User with this email already exists"
+        except NotFoundError:
+            pass
+            
+        # Check if username is taken
+        for user in users():
+            if getattr(user, 'username', None) == username:
+                return "Username already taken"
+        
+        # Create new user
+        new_user = User(
+            email=email,
+            username=username,
+            password=pwd_context.hash(password),
+            is_admin=is_admin
+        )
+        users.insert(new_user)
+        
+        # Return updated user list
+        return Table(
+            Tr(
+                Th("Username"),
+                Th("Email"),
+                Th("Admin"),
+                Th("Actions")
+            ),
+            *[Tr(
+                Td(user.username),
+                Td(user.email),
+                Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                Td(
+                    Button("Delete", 
+                          hx_delete=f"/mp/users/{user.email}",
+                          hx_target="#users-list",
+                          style="background-color: red;")
+                    if user.username != 'bigboy' else ''
+                )
+            ) for user in users()]
+        )
+    except Exception as e:
+        return f"Error creating user: {str(e)}"
+
+@rt('/mp/users/{email}')
+@admin_required
+def delete(session, email: str):
+    try:
+        user = users[email]
+        if user.username == 'bigboy':
+            return Response("Cannot delete admin account", status_code=403)
+        
+        # Delete user's threads first
+        user_threads = get_user_threads(email)
+        for thread in user_threads:
+            threads.delete(thread.id)
+            
+        # Delete user
+        users.delete(email)
+        
+        # Return updated user list
+        return Table(
+            Tr(
+                Th("Username"),
+                Th("Email"),
+                Th("Admin"),
+                Th("Actions")
+            ),
+            *[Tr(
+                Td(user.username),
+                Td(user.email),
+                Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                Td(
+                    Button("Delete", 
+                          hx_delete=f"/mp/users/{user.email}",
+                          hx_target="#users-list",
+                          style="background-color: red;")
+                    if user.username != 'bigboy' else ''
+                )
+            ) for user in users()]
+        )
+    except NotFoundError:
+        return Response("User not found", status_code=404)
+
+@rt('/mp/threads/{tid}')
+@admin_required
+def delete(session, tid: int):
+    try:
+        threads.delete(tid)
+        all_threads = threads()
+        
+        # Return updated threads list
+        return Table(
+            Tr(
+                Th("Title"),
+                Th("Author"),
+                Th("Posted"),
+                Th("Actions")
+            ),
+            *[Tr(
+                Td(thread.title),
+                Td(getattr(users[thread.email], 'username', 'Unknown') if thread.email else 'Anonymous'),
+                Td(format_time(thread.created_at)),
+                Td(
+                    Button("Delete", 
+                          hx_delete=f"/mp/threads/{thread.id}",
+                          hx_target="#threads-list",
+                          style="background-color: red;")
+                )
+            ) for thread in sorted(all_threads, key=lambda t: t.created_at or 0, reverse=True)]
+        )
+    except NotFoundError:
+        return Response("Thread not found", status_code=404)
+
 @rt('/')
 def get(session):
     # Show different content based on auth status
@@ -323,14 +577,25 @@ def get(session):
     try:
         user = users[session['auth']]
         username = getattr(user, 'username', user.email)
+        
+        # Add admin link if user is admin
+        header_items = [
+            A(username, href=f'/profile/{username}', style="margin-right: 10px; text-decoration: none;")
+        ]
+        if getattr(user, 'is_admin', False):
+            header_items.append(
+                A("Admin Panel", href="/mp", style="margin-right: 10px; color: #ff4444;")
+            )
+        header_items.append(Button("Logout", hx_post="/logout", style="color: red;"))
+        
+        header = Div(*header_items, class_='auth-links')
     except NotFoundError:
         username = session['auth']
-        
-    header = Div(
-        A(username, href=f'/profile/{username}', style="margin-right: 10px; text-decoration: none;"),
-        Button("Logout", hx_post="/logout", style="color: red;"),
-        class_="auth-links"
-    )
+        header = Div(
+            A(username, href=f'/profile/{username}', style="margin-right: 10px; text-decoration: none;"),
+            Button("Logout", hx_post="/logout", style="color: red;"),
+            class_='auth-links'
+        )
     
     return Titled('Forum',
                  header,
