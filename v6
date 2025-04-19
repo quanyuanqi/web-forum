@@ -307,16 +307,42 @@ def delete(session, tid: int):
 def get(session, tid: int):
     thread = threads[tid]
     
+    # Get username for display
+    try:
+        if thread.email:
+            author = users[thread.email]
+            author_display = getattr(author, 'username', 'Anonymous')
+        else:
+            author_display = "Anonymous"
+    except NotFoundError:
+        author_display = "Anonymous"
+    
     return Titled(thread.title,
                  Card(
                      A('← Back to Home', hx_get='/', hx_target='body',
                        style='display: block; margin-bottom: 20px; text-decoration: none;'),
                      H2(thread.title),
                      P(thread.content, style='margin: 20px 0;'),
-                     P(f'Posted by: {thread.email or "Anonymous"}', style='color: #666;'),
-                     P(f'Posted: {format_time(thread.created_at)}',
-                       style='color: #666;'),
-                     render(thread, session)
+                     Div(
+                         Span(f'Posted by {author_display}'),
+                         Span(' • '),
+                         Span(format_time(thread.created_at)),
+                         style='color: #666; margin-bottom: 20px;'
+                     ),
+                     render_thread_controls(thread, session) if session and 'auth' in session else ''
                  ))
+
+def render_thread_controls(thread, session):
+    if session and 'auth' in session and hasattr(thread, 'author') and thread.author == session['auth']:
+        return Div(
+            A('Edit', hx_get=f'/edit/{thread.id}', hx_target='body',
+              style='margin-right: 10px;'),
+            A('Delete', hx_delete=f'/delete/{thread.id}',
+              hx_target='body', hx_swap='outerHTML',
+              style='color: red;',
+              onclick="return confirm('Are you sure you want to delete this thread?')"
+            )
+        )
+    return ''
 
 serve()
