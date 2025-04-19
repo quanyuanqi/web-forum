@@ -229,8 +229,74 @@ def post(session):
         del session['auth']
     return HttpHeader('HX-Redirect', '/login')
 
+def get_thread_stats():
+    from datetime import datetime, timedelta
+    
+    now = datetime.now()
+    today_start = datetime(now.year, now.month, now.day).timestamp()
+    week_ago = (now - timedelta(days=7)).timestamp()
+    month_ago = (now - timedelta(days=30)).timestamp()
+    
+    all_threads = threads()
+    today_count = 0
+    week_count = 0
+    month_count = 0
+    
+    for thread in all_threads:
+        created_at = thread.created_at or 0
+        if created_at >= today_start:
+            today_count += 1
+            week_count += 1
+            month_count += 1
+        elif created_at >= week_ago:
+            week_count += 1
+            month_count += 1
+        elif created_at >= month_ago:
+            month_count += 1
+    
+    return today_count, week_count, month_count
+
+def render_stats():
+    today_count, week_count, month_count = get_thread_stats()
+    
+    return Article(
+        H2("Forum Statistics", style="text-align: center;"),
+        Div(
+            Article(
+                H3(str(today_count)),
+                P("New threads today"),
+                style="text-align: center; padding: 20px;"
+            ),
+            Article(
+                H3(str(week_count)),
+                P("New threads this week"),
+                style="text-align: center; padding: 20px;"
+            ),
+            Article(
+                H3(str(month_count)),
+                P("New threads this month"),
+                style="text-align: center; padding: 20px;"
+            ),
+            style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin: 20px 0;"
+        ),
+        P(
+            "Please ", 
+            A("login", href="/login"), 
+            " or ",
+            A("register", href="/register"),
+            " to view and participate in discussions.",
+            style="text-align: center; margin-top: 20px;"
+        )
+    )
+
 @rt('/')
 def get(session):
+    # Show different content based on auth status
+    if 'auth' not in session:
+        return Titled('Forum',
+                     auth_header(),
+                     render_stats())
+    
     # Get latest 20 threads, handling None created_at values
     all_threads = threads()
     # Set a default timestamp for threads without created_at
@@ -241,21 +307,18 @@ def get(session):
                           key=lambda t: t.created_at or 0,
                           reverse=True)[:20]
     
-    # Show different header based on auth status
-    if 'auth' in session:
-        try:
-            user = users[session['auth']]
-            username = getattr(user, 'username', user.email)  # Fallback to email if no username
-        except NotFoundError:
-            username = session['auth']
-            
-        header = Div(
-            Span(f"Welcome, {username}", style="margin-right: 10px;"),
-            Button("Logout", hx_post="/logout", style="color: red;"),
-            class_="auth-links"
-        )
-    else:
-        header = auth_header()
+    # Show header with username
+    try:
+        user = users[session['auth']]
+        username = getattr(user, 'username', user.email)
+    except NotFoundError:
+        username = session['auth']
+        
+    header = Div(
+        Span(f"Welcome, {username}", style="margin-right: 10px;"),
+        Button("Logout", hx_post="/logout", style="color: red;"),
+        class_="auth-links"
+    )
     
     return Titled('Forum',
                  header,
