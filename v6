@@ -50,15 +50,20 @@ def render(thread, session=None):
         )
 
     # Get username for display
-    author_email = thread.email or "Anonymous"
     try:
         if thread.email:
             author = users[thread.email]
-            author_display = getattr(author, 'username', author.email)  # Fallback to email if no username
+            author_display = getattr(author, 'username', 'Anonymous')
+            # Add link to author's profile
+            author_element = A(author_display, 
+                             href=f'/profile/{author_display}',
+                             style="text-decoration: none;")
         else:
             author_display = "Anonymous"
+            author_element = Span(author_display)
     except NotFoundError:
-        author_display = author_email
+        author_display = "Anonymous"
+        author_element = Span(author_display)
 
     return Li(H4(A(thread.title, 
                    hx_get=f'/thread/{thread.id}',
@@ -66,7 +71,7 @@ def render(thread, session=None):
                    style='text-decoration: none; cursor: pointer;',
                    class_='thread-title')),
              P(thread.content),
-             P(f'Posted by: {author_display}'),
+             P("Posted by: ", author_element),
              edit_delete_controls,
              P(f'Posted: {format_time(thread.created_at)}'),
              id=tid,
@@ -78,13 +83,20 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
                                   created_at=float, email=str, author=str, pk='id')
 
 # User database setup
-db = database('users.db')  # Changed path to current directory
+db = database('users.db')
 users = db.t.users
 
 if users not in db.t:
     users.create(dict(email=str, password=str, username=str), pk='email')
     
 User = users.dataclass()
+
+def find_user_by_username(username):
+    """Find a user by their username."""
+    for user in users():
+        if getattr(user, 'username', None) == username:
+            return user
+    raise NotFoundError()
 
 def format_time(timestamp):
     if not timestamp:
@@ -307,7 +319,7 @@ def get(session):
                           key=lambda t: t.created_at or 0,
                           reverse=True)[:20]
     
-    # Show header with username
+    # Show header with username and profile link
     try:
         user = users[session['auth']]
         username = getattr(user, 'username', user.email)
@@ -315,7 +327,7 @@ def get(session):
         username = session['auth']
         
     header = Div(
-        Span(f"Welcome, {username}", style="margin-right: 10px;"),
+        A(username, href=f'/profile/{username}', style="margin-right: 10px; text-decoration: none;"),
         Button("Logout", hx_post="/logout", style="color: red;"),
         class_="auth-links"
     )
@@ -407,5 +419,89 @@ def render_thread_controls(thread, session):
             )
         )
     return ''
+
+def get_user_threads(email):
+    """Get all threads by a specific user."""
+    all_threads = threads()
+    user_threads = [t for t in all_threads if t.email == email]
+    return sorted(user_threads, key=lambda t: t.created_at or 0, reverse=True)
+
+@rt('/profile/{username}')
+@basic_auth
+def get(session, username: str):
+    try:
+        profile_user = find_user_by_username(username)
+        is_own_profile = session['auth'] == profile_user.email
+        
+        # Get user's threads
+        user_threads = get_user_threads(profile_user.email)
+        
+        content = [
+            A('← Back to Home', hx_get='/', hx_target='body', 
+              style='display: block; margin-bottom: 20px; text-decoration: none;'),
+            H1(f"{username}'s Profile", style="margin-bottom: 30px;")
+        ]
+        
+        # Only show private information on own profile
+        if is_own_profile:
+            content.extend([
+                Article(
+                    H3("Account Information", style="margin-bottom: 20px;"),
+                    P(f"Username: {username}"),
+                    P(f"Email: {profile_user.email}"),
+                    style="margin-bottom: 30px;"
+                ),
+                Article(
+                    H3("Change Password", style="margin-bottom: 20px;"),
+                    Form(
+                        Input(type="password", placeholder="Current Password", 
+                             id="current_password", required=True),
+                        Input(type="password", placeholder="New Password", 
+                             id="new_password", required=True),
+                        Input(type="password", placeholder="Confirm New Password", 
+                             id="confirm_password", required=True),
+                        Button("Update Password", type="submit"),
+                        Span(id="password-error", style="color: red;"),
+                        hx_post=f"/profile/{username}/change-password",
+                        hx_target="#password-error"
+                    ),
+                    style="margin-bottom: 30px;"
+                )
+            ])
+        
+        # Show user's threads
+        content.append(
+            Article(
+                H3(f"Threads by {username}", style="margin-bottom: 20px;"),
+                Ul(*[render(t, session) for t in user_threads]) if user_threads else P("No threads yet.")
+            )
+        )
+        
+        return Titled(f"{username}'s Profile",
+                     Card(*content))
+                     
+    except NotFoundError:
+        return Response("User not found", status_code=404)
+
+@rt('/profile/{username}/change-password')
+@basic_auth
+def post(session, username: str, current_password: str, new_password: str, confirm_password: str):
+    try:
+        profile_user = find_user_by_username(username)
+        if session['auth'] != profile_user.email:
+            return Response("Not authorized", status_code=403)
+            
+        if new_password != confirm_password:
+            return "New passwords do not match"
+            
+        if not pwd_context.verify(current_password, profile_user.password):
+            return "Current password is incorrect"
+            
+        profile_user.password = pwd_context.hash(new_password)
+        users.update(profile_user)
+        return "Password updated successfully"
+        
+    except NotFoundError:
+        return Response("User not found", status_code=404)
 
 serve()
