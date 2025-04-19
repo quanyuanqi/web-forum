@@ -49,13 +49,24 @@ def render(thread, session=None):
             style='margin-bottom: 10px;'
         )
 
+    # Get username for display
+    author_email = thread.email or "Anonymous"
+    try:
+        if thread.email:
+            author = users[thread.email]
+            author_display = getattr(author, 'username', author.email)  # Fallback to email if no username
+        else:
+            author_display = "Anonymous"
+    except NotFoundError:
+        author_display = author_email
+
     return Li(H4(A(thread.title, 
                    hx_get=f'/thread/{thread.id}',
                    hx_target='body',
                    style='text-decoration: none; cursor: pointer;',
                    class_='thread-title')),
              P(thread.content),
-             P(f'Posted by: {thread.email or "Anonymous"}'),
+             P(f'Posted by: {author_display}'),
              edit_delete_controls,
              P(f'Posted: {format_time(thread.created_at)}'),
              id=tid,
@@ -67,11 +78,11 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
                                   created_at=float, email=str, author=str, pk='id')
 
 # User database setup
-db = database('data/users.db')
+db = database('users.db')  # Changed path to current directory
 users = db.t.users
 
 if users not in db.t:
-    users.create(dict(email=str, password=str), pk='email')
+    users.create(dict(email=str, password=str, username=str), pk='email')
     
 User = users.dataclass()
 
@@ -138,12 +149,18 @@ def mk_edit_form(thread):
     )
 
 # Login and Register form helper
-def auth_form(btn_text, target):
-    return Form(
+def auth_form(btn_text, target, include_username=False):
+    inputs = []
+    if include_username:
+        inputs.append(Input(id="username", type="text", placeholder="Username", required=True))
+    inputs.extend([
         Input(id="email", type="email", placeholder="Email", required=True),
         Input(id="password", type="password", placeholder="Password", required=True),
         Button(btn_text, type="submit"),
-        Span(id="error", style="color:red"),
+        Span(id="error", style="color:red")
+    ])
+    return Form(
+        *inputs,
         hx_post=target,
         hx_target="#error",
     )
@@ -185,7 +202,7 @@ def get():
             A('← Back to Home', hx_get='/', hx_target='body', 
               style='display: block; margin-bottom: 20px; text-decoration: none;'),
             H1("Register"),
-            auth_form("Register", "/register"),
+            auth_form("Register", "/register", include_username=True),
             Hr(),
             P("Already have an account? ", A("Login", href="/login")),
             class_="mw-480 mx-auto"
@@ -193,12 +210,15 @@ def get():
     )
 
 @rt('/register')
-def post(email:str, password:str):
+def post(email:str, password:str, username:str):
+    if not username or len(username.strip()) < 3:
+        return "Username must be at least 3 characters long"
+        
     try:
         users[email]
         return "User already exists"
     except NotFoundError:
-        new_user = User(email=email, password=pwd_context.hash(password))
+        new_user = User(email=email, password=pwd_context.hash(password), username=username)
         users.insert(new_user)
         return HttpHeader('HX-Redirect', '/login')
 
@@ -222,11 +242,20 @@ def get(session):
                           reverse=True)[:20]
     
     # Show different header based on auth status
-    header = auth_header() if 'auth' not in session else Div(
-        Span(f"Welcome, {session['auth']}", style="margin-right: 10px;"),
-        Button("Logout", hx_post="/logout", style="color: red;"),
-        class_="auth-links"
-    )
+    if 'auth' in session:
+        try:
+            user = users[session['auth']]
+            username = getattr(user, 'username', user.email)  # Fallback to email if no username
+        except NotFoundError:
+            username = session['auth']
+            
+        header = Div(
+            Span(f"Welcome, {username}", style="margin-right: 10px;"),
+            Button("Logout", hx_post="/logout", style="color: red;"),
+            class_="auth-links"
+        )
+    else:
+        header = auth_header()
     
     return Titled('Forum',
                  header,
