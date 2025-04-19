@@ -153,6 +153,8 @@ def auth_form(btn_text, target):
 def get():
     return Container(
         Article(
+            A('← Back to Home', hx_get='/', hx_target='body', 
+              style='display: block; margin-bottom: 20px; text-decoration: none;'),
             H1("Login"),
             auth_form("Login", target="/login"),
             Hr(),
@@ -180,6 +182,8 @@ def post(session, email:str, password:str):
 def get():
     return Container(
         Article(
+            A('← Back to Home', hx_get='/', hx_target='body', 
+              style='display: block; margin-bottom: 20px; text-decoration: none;'),
             H1("Register"),
             auth_form("Register", "/register"),
             Hr(),
