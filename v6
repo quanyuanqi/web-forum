@@ -6,7 +6,7 @@ import os
 from collections import defaultdict
 from secrets import token_urlsafe
 
-# Add styles for thread title links and auth-related elements
+# Add styles for thread title links, auth-related elements, and comments
 Style('''
 .thread-title {
     color: #0066cc;
@@ -29,6 +29,33 @@ Style('''
 .mx-auto {
     margin-left: auto;
     margin-right: auto;
+}
+.comments-section {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #eee;
+}
+.comment {
+    margin: 10px 0;
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 4px;
+}
+.comment-meta {
+    color: #666;
+    font-size: 0.9em;
+    margin-top: 5px;
+}
+.comment-form {
+    margin-top: 20px;
+}
+.comment-input {
+    width: 100%;
+    min-height: 60px;
+    margin-bottom: 10px;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
 }
 ''')
 
@@ -104,6 +131,93 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
 # User database setup
 db = database('users.db')
 users = db.t.users
+
+# Comments database setup
+comments = db.t.comments
+if comments not in db.t:
+    comments.create({
+        'id': int,
+        'thread_id': int,
+        'content': str,
+        'email': str,
+        'created_at': float
+    }, pk='id')
+
+Comment = comments.dataclass()
+
+def render_comment(comment, session=None):
+    """Render a single comment."""
+    try:
+        if comment.email:
+            author = users[comment.email]
+            author_display = getattr(author, 'username', 'Anonymous')
+            author_element = A(author_display, 
+                             href=f'/profile/{author_display}',
+                             style="text-decoration: none;")
+        else:
+            author_display = "Anonymous"
+            author_element = Span(author_display)
+    except NotFoundError:
+        author_display = "Anonymous"
+        author_element = Span(author_display)
+
+    delete_button = ''
+    if session and 'auth' in session and comment.email == session['auth']:
+        delete_button = A('Delete',
+                         hx_delete=f'/comment/{comment.id}',
+                         hx_target=f'#comment-{comment.id}',
+                         hx_swap='outerHTML',
+                         style='color: red; margin-left: 10px;',
+                         onclick="return confirm('Delete this comment?')")
+
+    return Div(
+        P(comment.content),
+        P(
+            "Posted by: ", author_element,
+            " • ", format_time(comment.created_at),
+            delete_button,
+            class_='comment-meta'
+        ),
+        id=f'comment-{comment.id}',
+        class_='comment'
+    )
+
+def render_comments_section(thread_id, session=None):
+    """Render the comments section for a thread."""
+    thread_comments = sorted(
+        [c for c in comments() if c.thread_id == thread_id],
+        key=lambda c: c.created_at or 0
+    )
+    
+    comment_form = ''
+    if session and 'auth' in session:
+        comment_form = Form(
+            Input(placeholder='Add a comment...', 
+                  name='content',
+                  required=True,
+                  class_='comment-input'),
+            Button('Post Comment'),
+            hx_post=f'/comment/{thread_id}',
+            hx_target='#comments-list',
+            hx_swap='beforeend',
+            class_='comment-form'
+        )
+    else:
+        comment_form = P(
+            "Please ", 
+            A("login", href="/login"), 
+            " to comment."
+        )
+
+    return Div(
+        H3(f"Comments ({len(thread_comments)})"),
+        comment_form,
+        Div(
+            *[render_comment(c, session) for c in thread_comments],
+            id='comments-list'
+        ),
+        class_='comments-section'
+    )
 
 # Create users table with correct schema
 if users not in db.t:
@@ -685,7 +799,8 @@ def get(session, tid: int):
                          Span(format_time(thread.created_at)),
                          style='color: #666; margin-bottom: 20px;'
                      ),
-                     render_thread_controls(thread, session) if session and 'auth' in session else ''
+                     render_thread_controls(thread, session) if session and 'auth' in session else '',
+                     render_comments_section(thread.id, session)
                  ))
 
 def render_thread_controls(thread, session):
@@ -810,5 +925,37 @@ def generate_csrf_token(session):
 
 def verify_csrf_token(session, token):
     return token and token == session.get('csrf_token')
+
+# Add comment routes
+@rt('/comment/{thread_id}')
+@basic_auth
+def post(session, thread_id: int, content: str):
+    """Add a new comment to a thread."""
+    try:
+        thread = threads[thread_id]  # Verify thread exists
+        comment = Comment(
+            id=max([c.id for c in comments()] + [0]) + 1,
+            thread_id=thread_id,
+            content=content,
+            email=session['auth'],
+            created_at=time()
+        )
+        comments.insert(comment)
+        return render_comment(comment, session)
+    except NotFoundError:
+        return Response("Thread not found", status_code=404)
+
+@rt('/comment/{comment_id}')
+@basic_auth
+def delete(session, comment_id: int):
+    """Delete a comment."""
+    try:
+        comment = comments[comment_id]
+        if comment.email != session['auth']:
+            return Response("Not authorized to delete this comment", status_code=403)
+        comments.delete(comment_id)
+        return ''
+    except NotFoundError:
+        return Response("Comment not found", status_code=404)
 
 serve()
