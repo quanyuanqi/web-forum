@@ -5,6 +5,8 @@ from functools import wraps
 import os
 from collections import defaultdict
 from secrets import token_urlsafe
+import json
+from urllib.parse import quote
 
 # Add styles for thread title links, auth-related elements, and comments
 Style('''
@@ -104,6 +106,75 @@ Style('''
     background-color: #0066cc;
     color: white;
     border-color: #0066cc;
+}
+.message-overlay-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+}
+.message-overlay {
+    position: relative;
+    padding: 20px 40px;
+    border-radius: 8px;
+    background-color: #fff;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    max-width: 500px;
+    width: 90%;
+    text-align: center;
+    animation: messageIn 0.3s ease-out;
+}
+.message-success {
+    border-left: 4px solid #4CAF50;
+}
+.message-info {
+    border-left: 4px solid #2196F3;
+}
+.message-error {
+    border-left: 4px solid #f44336;
+}
+.message-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background-color: #f0f0f0;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 18px;
+    color: #666;
+    transition: all 0.2s;
+}
+.message-close:hover {
+    background-color: #e0e0e0;
+    color: #333;
+}
+@keyframes messageIn {
+    from {
+        transform: scale(0.8) translateY(20px);
+        opacity: 0;
+    }
+    to {
+        transform: scale(1) translateY(0);
+        opacity: 1;
+    }
+}
+@keyframes messageOut {
+    to {
+        transform: scale(0.8) translateY(20px);
+        opacity: 0;
+    }
 }
 ''')
 
@@ -473,17 +544,16 @@ def post(session, email:str, password:str):
             # Deduct one point for login
             user.points -= 1
             users.update(user)
-            points_message = f"You have used 1 point for this login. You currently have {user.points} points remaining. " + \
-                           "Once your points are depleted, you will no longer be able to log in. " + \
-                           "You can earn additional points by posting, voting, or commenting." + \
-                           f"(此次登录使用1点，还剩{user.points}点。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)"
+            points_message = f"You have used 1 point for this login. You currently have {user.points} points remaining. Once your points are depleted, you will no longer be able to log in. You can earn additional points by posting, voting, or commenting.(此次登录使用1点，还剩{user.points}点。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)"
         else:
             points_message = "Welcome, admin! You have unlimited points."
 
         session['auth'] = user.email
         print(f"Login successful for {email}")  # Debug log
         
-        return Response(points_message, headers={'HX-Redirect': '/'})
+        # Encode message for URL
+        encoded_message = quote(points_message)
+        return Response("", headers={'HX-Redirect': f'/?message={encoded_message}&type=info'})
     except NotFoundError:
         print(f"User not found: {email}")  # Debug log
         return "Email or password are incorrect"
@@ -525,13 +595,14 @@ def post(email:str, password:str, username:str):
             points=3  # Default 3 points for new users
         )
         users.insert(new_user)
-        return Response(
-            "Thank you for registering with this site. You have default 3 points from the system for 3 times' login. " +
-            "Once your points are depleted, you will no longer be able to log in. " +
-            "You can earn additional points by posting, voting, or commenting. " +
-            "(感谢注册， 你有系统默认的3点，能够登录3次。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)",
-            headers={'HX-Redirect': '/login'}
-        )
+        message = ("Thank you for registering with this site. You have default 3 points from the system for 3 times' login. " +
+                  "Once your points are depleted, you will no longer be able to log in. " +
+                  "You can earn additional points by posting, voting, or commenting. " +
+                  "(感谢注册， 你有系统默认的3点，能够登录3次。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)")
+        
+        # Encode message for URL
+        encoded_message = quote(message)
+        return Response("", headers={'HX-Redirect': f'/login?message={encoded_message}&type=success'})
 
 # Logout route
 @rt('/logout')
@@ -878,6 +949,67 @@ def get(session, page: int = 1):
         )
     
     return Titled('Forum',
+                 Script('''
+                 // Function to show message
+                 function showMessage(message, type) {
+                     // Create container
+                     const container = document.createElement('div');
+                     container.className = 'message-overlay-container';
+                     
+                     // Create message div
+                     const messageDiv = document.createElement('div');
+                     messageDiv.className = `message-overlay message-${type}`;
+                     
+                     // Create close button
+                     const closeButton = document.createElement('button');
+                     closeButton.className = 'message-close';
+                     closeButton.innerHTML = '×';
+                     closeButton.onclick = function() {
+                         messageDiv.style.animation = 'messageOut 0.3s ease-out forwards';
+                         setTimeout(() => {
+                             container.remove();
+                         }, 300);
+                     };
+                     
+                     // Create message text
+                     const messageText = document.createElement('div');
+                     messageText.style.marginTop = '10px';
+                     messageText.textContent = message;
+                     
+                     // Assemble the elements
+                     messageDiv.appendChild(closeButton);
+                     messageDiv.appendChild(messageText);
+                     container.appendChild(messageDiv);
+                     document.body.appendChild(container);
+                 }
+
+                 // Function to get URL parameters
+                 function getUrlParams() {
+                     const params = new URLSearchParams(window.location.search);
+                     const message = params.get('message');
+                     const type = params.get('type');
+                     return { message, type };
+                 }
+
+                 // Show message if it exists in URL
+                 function checkAndShowMessage() {
+                     const { message, type } = getUrlParams();
+                     if (message && !window.messageShown) {
+                         window.messageShown = true;
+                         showMessage(decodeURIComponent(message), type || 'info');
+                         // Remove message from URL without refreshing
+                         const newUrl = window.location.pathname;
+                         window.history.replaceState({}, '', newUrl);
+                     }
+                 }
+
+                 // Check for message on page load and after HTMX swaps
+                 document.addEventListener('DOMContentLoaded', checkAndShowMessage);
+                 document.addEventListener('htmx:afterSwap', checkAndShowMessage);
+                 
+                 // Run immediately in case DOMContentLoaded has already fired
+                 checkAndShowMessage();
+                 '''),
                  header,
                  Card(
                      mk_form(session),
