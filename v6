@@ -57,6 +57,54 @@ Style('''
     border: 1px solid #ddd;
     border-radius: 4px;
 }
+.vote-section {
+    display: flex;
+    align-items: center;
+    margin: 10px 0;
+}
+.vote-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 5px;
+    color: #666;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 1.2em;
+}
+.vote-button.voted {
+    color: #ff4500;
+}
+.vote-button:hover {
+    color: #ff4500;
+}
+.vote-count {
+    margin: 0 5px;
+    font-weight: bold;
+    min-width: 30px;
+    text-align: center;
+}
+.pagination {
+    display: flex;
+    justify-content: center;
+    margin: 20px 0;
+}
+.pagination a {
+    padding: 8px 16px;
+    text-decoration: none;
+    color: #0066cc;
+    border: 1px solid #ddd;
+    margin: 0 4px;
+}
+.pagination a:hover {
+    background-color: #f0f0f0;
+}
+.pagination a.active {
+    background-color: #0066cc;
+    color: white;
+    border-color: #0066cc;
+}
 ''')
 
 # Password hashing setup
@@ -100,7 +148,6 @@ def render(thread, session=None):
         if thread.email:
             author = users[thread.email]
             author_display = getattr(author, 'username', 'Anonymous')
-            # Add link to author's profile
             author_element = A(author_display, 
                              href=f'/profile/{author_display}',
                              style="text-decoration: none;")
@@ -111,11 +158,42 @@ def render(thread, session=None):
         author_display = "Anonymous"
         author_element = Span(author_display)
 
+    # Voting section
+    vote_count = get_vote_count(thread.id)
+    vote_button = ''
+    
+    if session and 'auth' in session:
+        has_voted = has_user_voted(thread.id, session['auth'])
+        vote_class = 'voted' if has_voted else ''
+        
+        vote_button = Button(
+            "▲",  # Unicode up arrow
+            Span(str(vote_count), class_='vote-count'),
+            hx_post=f'/vote/{thread.id}',
+            hx_target=f'#vote-section-{thread.id}',
+            class_=f'vote-button {vote_class}',
+            id=f'vote-button-{thread.id}'
+        )
+    else:
+        vote_button = Div(
+            "▲",  # Unicode up arrow
+            Span(str(vote_count), class_='vote-count'),
+            class_='vote-button',
+            title='Login to vote'
+        )
+
+    vote_section = Div(
+        vote_button,
+        id=f'vote-section-{thread.id}',
+        class_='vote-section'
+    )
+
     return Li(H4(A(thread.title, 
                    hx_get=f'/thread/{thread.id}',
                    hx_target='body',
                    style='text-decoration: none; cursor: pointer;',
                    class_='thread-title')),
+             vote_section,
              P(thread.content),
              P("Posted by: ", author_element),
              edit_delete_controls,
@@ -131,6 +209,17 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
 # User database setup
 db = database('users.db')
 users = db.t.users
+
+# Votes database setup
+votes = db.t.votes
+if votes not in db.t:
+    votes.create({
+        'thread_id': int,
+        'user_email': str,
+        'created_at': float
+    }, pk=['thread_id', 'user_email'])
+
+Vote = votes.dataclass()
 
 # Comments database setup
 comments = db.t.comments
@@ -686,22 +775,36 @@ def delete(session, tid: int):
         return Response("Thread not found", status_code=404)
 
 @rt('/')
-def get(session):
+def get(session, page: int = 1):
     # Show different content based on auth status
     if 'auth' not in session:
         return Titled('Forum',
                      auth_header(),
                      render_stats())
     
-    # Get latest 20 threads, handling None created_at values
-    all_threads = threads()
-    # Set a default timestamp for threads without created_at
-    for thread in all_threads:
-        if thread.created_at is None:
-            thread.created_at = 0
-    latest_threads = sorted(all_threads, 
-                          key=lambda t: t.created_at or 0,
-                          reverse=True)[:20]
+    # Get ranked threads with pagination
+    page_threads, total_threads = get_ranked_threads(page)
+    total_pages = (total_threads + 29) // 30  # Round up division
+    
+    # Create pagination links
+    pagination = []
+    if total_pages > 1:
+        if page > 1:
+            pagination.append(A('Previous', 
+                              hx_get=f'/?page={page-1}',
+                              hx_target='body'))
+        
+        for p in range(max(1, page-2), min(total_pages+1, page+3)):
+            class_ = 'active' if p == page else ''
+            pagination.append(A(str(p),
+                              hx_get=f'/?page={p}',
+                              hx_target='body',
+                              class_=class_))
+        
+        if page < total_pages:
+            pagination.append(A('Next',
+                              hx_get=f'/?page={page+1}',
+                              hx_target='body'))
     
     # Show header with username and profile link
     try:
@@ -731,7 +834,10 @@ def get(session):
                  header,
                  Card(
                      mk_form(session),
-                     Ul(*[render(t, session) for t in latest_threads], id='thread-list', class_='thread-list')
+                     Ul(*[render(t, session) for t in page_threads], 
+                        id='thread-list', 
+                        class_='thread-list'),
+                     Div(*pagination, class_='pagination') if pagination else ''
                  ))
 
 @rt('/')
@@ -957,5 +1063,89 @@ def delete(session, comment_id: int):
         return ''
     except NotFoundError:
         return Response("Comment not found", status_code=404)
+
+# Function to get vote count for a thread
+def get_vote_count(thread_id):
+    return len([v for v in votes() if v.thread_id == thread_id])
+
+# Function to check if user has voted
+def has_user_voted(thread_id, user_email):
+    try:
+        votes[(thread_id, user_email)]
+        return True
+    except NotFoundError:
+        return False
+
+# Function to get ranked threads
+def get_ranked_threads(page=1, per_page=30):
+    now = time()
+    day_ago = now - 86400  # 24 hours ago
+    
+    # Get all threads and their vote counts from last 24 hours
+    thread_votes = defaultdict(int)
+    recent_votes = [v for v in votes() if v.created_at > day_ago]
+    
+    for vote in recent_votes:
+        thread_votes[vote.thread_id] += 1
+    
+    all_threads = list(threads())
+    
+    # Sort threads by votes (in last 24h) and then by creation time
+    ranked_threads = sorted(
+        all_threads,
+        key=lambda t: (
+            thread_votes[t.id],  # First by vote count
+            t.created_at or 0    # Then by creation time
+        ),
+        reverse=True
+    )
+    
+    # Calculate pagination
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    
+    return ranked_threads[start_idx:end_idx], len(ranked_threads)
+
+# Add voting route
+@rt('/vote/{thread_id}')
+@basic_auth
+def post(session, thread_id: int):
+    """Toggle vote for a thread."""
+    try:
+        thread = threads[thread_id]  # Verify thread exists
+        user_email = session['auth']
+        
+        try:
+            # If vote exists, remove it (toggle off)
+            votes.delete((thread_id, user_email))
+        except NotFoundError:
+            # If vote doesn't exist, add it
+            vote = Vote(
+                thread_id=thread_id,
+                user_email=user_email,
+                created_at=time()
+            )
+            votes.insert(vote)
+        
+        # Return updated vote section
+        vote_count = get_vote_count(thread_id)
+        has_voted = has_user_voted(thread_id, user_email)
+        vote_class = 'voted' if has_voted else ''
+        
+        return Div(
+            Button(
+                "▲",  # Unicode up arrow
+                Span(str(vote_count), class_='vote-count'),
+                hx_post=f'/vote/{thread_id}',
+                hx_target=f'#vote-section-{thread_id}',
+                class_=f'vote-button {vote_class}',
+                id=f'vote-button-{thread_id}'
+            ),
+            id=f'vote-section-{thread_id}',
+            class_='vote-section'
+        )
+        
+    except NotFoundError:
+        return Response("Thread not found", status_code=404)
 
 serve()
