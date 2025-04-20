@@ -87,7 +87,7 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
 db = database('users.db')
 users = db.t.users
 
-# Create or update users table with correct schema
+# Create users table with correct schema
 if users not in db.t:
     users.create({
         'email': str,
@@ -98,28 +98,15 @@ if users not in db.t:
 
 User = users.dataclass()
 
-def create_admin_account():
-    """Create the admin account if it doesn't exist."""
+def is_admin(session):
+    """Check if the current user is an admin (has username 'bigboy')."""
+    if not session or 'auth' not in session:
+        return False
     try:
-        admin = users['admin@forum.com']
-        if not getattr(admin, 'is_admin', False):
-            admin.is_admin = True
-            admin.username = 'bigboy'  # Ensure username is set
-            admin.password = pwd_context.hash('admin123')  # Reset password
-            users.update(admin)
-            print("Admin account updated successfully")
+        user = users[session['auth']]
+        return getattr(user, 'username', '') == 'bigboy'
     except NotFoundError:
-        admin = User(
-            email='admin@forum.com',
-            username='bigboy',
-            password=pwd_context.hash('admin123'),
-            is_admin=True
-        )
-        users.insert(admin)
-        print("Admin account created successfully")
-
-# Create admin account if it doesn't exist
-create_admin_account()
+        return False
 
 def find_user_by_username(username):
     """Find a user by their username."""
@@ -136,6 +123,7 @@ def format_time(timestamp):
 
 # Authentication decorator
 def basic_auth(f):
+    """Decorator to require login."""
     @wraps(f)
     def wrapper(session, *args, **kwargs):
         if "auth" not in session:
@@ -259,12 +247,22 @@ def get():
 def post(email:str, password:str, username:str):
     if not username or len(username.strip()) < 3:
         return "Username must be at least 3 characters long"
-        
+    
+    # Check if username is taken
+    for user in users():
+        if getattr(user, 'username', None) == username:
+            return "Username already taken"
+    
     try:
         users[email]
-        return "User already exists"
+        return "User with this email already exists"
     except NotFoundError:
-        new_user = User(email=email, password=pwd_context.hash(password), username=username)
+        new_user = User(
+            email=email,
+            password=pwd_context.hash(password),
+            username=username,
+            is_admin=(username == 'bigboy')  # Admin status based on username
+        )
         users.insert(new_user)
         return HttpHeader('HX-Redirect', '/login')
 
@@ -335,18 +333,8 @@ def render_stats():
         )
     )
 
-def is_admin(session):
-    """Check if the current user is an admin."""
-    if not session or 'auth' not in session:
-        return False
-    try:
-        user = users[session['auth']]
-        return getattr(user, 'is_admin', False)
-    except NotFoundError:
-        return False
-
 def admin_required(f):
-    """Decorator to require admin access for a route."""
+    """Decorator to require admin access."""
     @wraps(f)
     def wrapper(session, *args, **kwargs):
         if not is_admin(session):
@@ -356,10 +344,21 @@ def admin_required(f):
 
 # Admin management page
 @rt('/mp')
-@admin_required
+@basic_auth  # First check if user is logged in
+@admin_required  # Then check if user is admin
 def get(session):
     all_users = users()
     all_threads = threads()
+    
+    def get_author_display(thread):
+        """Helper function to safely get author display name."""
+        if not thread.email:
+            return 'Anonymous'
+        try:
+            user = users[thread.email]
+            return getattr(user, 'username', 'Unknown')
+        except NotFoundError:
+            return f'Deleted User ({thread.email})'
     
     return Titled('Admin Management',
                  Card(
@@ -376,7 +375,6 @@ def get(session):
                              Input(id="username", placeholder="Username", required=True),
                              Input(id="email", type="email", placeholder="Email", required=True),
                              Input(id="password", type="password", placeholder="Password", required=True),
-                             Input(id="is_admin", type="checkbox", label="Is Admin"),
                              Button("Add User", type="submit"),
                              Span(id="user-error", style="color: red;"),
                              hx_post="/mp/users/add",
@@ -395,7 +393,7 @@ def get(session):
                              *[Tr(
                                  Td(user.username),
                                  Td(user.email),
-                                 Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                                 Td("Yes" if user.username == 'bigboy' else "No"),
                                  Td(
                                      Button("Delete", 
                                            hx_delete=f"/mp/users/{user.email}",
@@ -421,7 +419,7 @@ def get(session):
                              ),
                              *[Tr(
                                  Td(thread.title),
-                                 Td(getattr(users[thread.email], 'username', 'Unknown') if thread.email else 'Anonymous'),
+                                 Td(get_author_display(thread)),
                                  Td(format_time(thread.created_at)),
                                  Td(
                                      Button("Delete", 
@@ -452,12 +450,12 @@ def post(session, username: str, email: str, password: str, is_admin: bool = Fal
             if getattr(user, 'username', None) == username:
                 return "Username already taken"
         
-        # Create new user
+        # Create new user (is_admin is determined by username)
         new_user = User(
             email=email,
             username=username,
             password=pwd_context.hash(password),
-            is_admin=is_admin
+            is_admin=(username == 'bigboy')
         )
         users.insert(new_user)
         
@@ -472,7 +470,7 @@ def post(session, username: str, email: str, password: str, is_admin: bool = Fal
             *[Tr(
                 Td(user.username),
                 Td(user.email),
-                Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                Td("Yes" if user.username == 'bigboy' else "No"),
                 Td(
                     Button("Delete", 
                           hx_delete=f"/mp/users/{user.email}",
@@ -512,7 +510,7 @@ def delete(session, email: str):
             *[Tr(
                 Td(user.username),
                 Td(user.email),
-                Td("Yes" if getattr(user, 'is_admin', False) else "No"),
+                Td("Yes" if user.username == 'bigboy' else "No"),
                 Td(
                     Button("Delete", 
                           hx_delete=f"/mp/users/{user.email}",
