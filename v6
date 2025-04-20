@@ -210,6 +210,41 @@ app, rt, threads, Thread = fast_app('forum.db', live=True, render=render,
 db = database('users.db')
 users = db.t.users
 
+# Create users table if it doesn't exist
+if users not in db.t:
+    users.create({
+        'email': str,
+        'password': str,
+        'username': str,
+        'is_admin': bool,
+        'points': int
+    }, pk='email')
+else:
+    # Add points column if it doesn't exist
+    try:
+        db.execute('ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 3')
+        # Update existing users to have default points
+        db.execute('UPDATE users SET points = 3 WHERE points IS NULL')
+        # Give admin unlimited points
+        db.execute("UPDATE users SET points = 999999 WHERE username = 'bigboy'")
+    except:
+        pass  # Column might already exist
+
+User = users.dataclass()
+
+# Create admin user if not exists
+try:
+    admin = users['admin@example.com']
+except NotFoundError:
+    admin = User(
+        email='admin@example.com',
+        password=pwd_context.hash('admin'),
+        username='bigboy',
+        is_admin=True,
+        points=999999  # Admin gets unlimited points
+    )
+    users.insert(admin)
+
 # Votes database setup
 votes = db.t.votes
 if votes not in db.t:
@@ -307,17 +342,6 @@ def render_comments_section(thread_id, session=None):
         ),
         class_='comments-section'
     )
-
-# Create users table with correct schema
-if users not in db.t:
-    users.create({
-        'email': str,
-        'password': str,
-        'username': str,
-        'is_admin': bool
-    }, pk='email')
-
-User = users.dataclass()
 
 def is_admin(session):
     """Check if the current user is an admin (has username 'bigboy')."""
@@ -441,10 +465,25 @@ def post(session, email:str, password:str):
             print("Password verification failed")  # Debug log
             return "Email or password are incorrect"
 
+        # Check if user has enough points (except for admin)
+        if not user.is_admin:
+            if user.points <= 0:
+                return "You have no points remaining. You cannot log in. Please contact support for assistance."
+
+            # Deduct one point for login
+            user.points -= 1
+            users.update(user)
+            points_message = f"You have used 1 point for this login. You currently have {user.points} points remaining. " + \
+                           "Once your points are depleted, you will no longer be able to log in. " + \
+                           "You can earn additional points by posting, voting, or commenting." + \
+                           f"(此次登录使用1点，还剩{user.points}点。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)"
+        else:
+            points_message = "Welcome, admin! You have unlimited points."
+
         session['auth'] = user.email
         print(f"Login successful for {email}")  # Debug log
         
-        return HttpHeader('HX-Redirect', '/')
+        return Response(points_message, headers={'HX-Redirect': '/'})
     except NotFoundError:
         print(f"User not found: {email}")  # Debug log
         return "Email or password are incorrect"
@@ -482,10 +521,17 @@ def post(email:str, password:str, username:str):
             email=email,
             password=pwd_context.hash(password),
             username=username,
-            is_admin=(username == 'bigboy')  # Admin status based on username
+            is_admin=(username == 'bigboy'),
+            points=3  # Default 3 points for new users
         )
         users.insert(new_user)
-        return HttpHeader('HX-Redirect', '/login')
+        return Response(
+            "Thank you for registering with this site. You have default 3 points from the system for 3 times' login. " +
+            "Once your points are depleted, you will no longer be able to log in. " +
+            "You can earn additional points by posting, voting, or commenting. " +
+            "(感谢注册， 你有系统默认的3点，能够登录3次。如果没有点数，未来将无法登录。可以通过发帖，投票，或评论增加点数。)",
+            headers={'HX-Redirect': '/login'}
+        )
 
 # Logout route
 @rt('/logout')
@@ -676,7 +722,8 @@ def post(session, username: str, email: str, password: str, is_admin: bool = Fal
             email=email,
             username=username,
             password=pwd_context.hash(password),
-            is_admin=(username == 'bigboy')
+            is_admin=(username == 'bigboy'),
+            points=0  # Assuming default points
         )
         users.insert(new_user)
         
@@ -840,6 +887,15 @@ def get(session, page: int = 1):
                      Div(*pagination, class_='pagination') if pagination else ''
                  ))
 
+def award_points(email, points=1):
+    """Award points to a user."""
+    try:
+        user = users[email]
+        user.points += points
+        users.update(user)
+    except NotFoundError:
+        pass
+
 @rt('/')
 @basic_auth
 def post(session, thread: Thread):
@@ -848,6 +904,8 @@ def post(session, thread: Thread):
     thread.email = user_email
     thread.author = user_email
     new_thread = threads.insert(thread)
+    # Award point for posting
+    award_points(user_email)
     return render(new_thread, session)
 
 @rt('/edit/{tid}')
@@ -951,6 +1009,15 @@ def get(session, username: str):
                     H3("Account Information", style="margin-bottom: 20px;"),
                     P(f"Username: {username}"),
                     P(f"Email: {profile_user.email}"),
+                    P(f"Points: {profile_user.points}", style="color: #0066cc; font-weight: bold;"),
+                    P("You can earn points by:", style="margin-top: 10px;"),
+                    Ul(
+                        Li("Posting a new thread (+1 point)"),
+                        Li("Voting on threads (+1 point)"),
+                        Li("Commenting on threads (+1 point)"),
+                        style="margin-left: 20px;"
+                    ),
+                    P("Each login consumes 1 point.", style="margin-top: 10px;"),
                     style="margin-bottom: 30px;"
                 ),
                 Article(
@@ -1047,6 +1114,8 @@ def post(session, thread_id: int, content: str):
             created_at=time()
         )
         comments.insert(comment)
+        # Award point for commenting
+        award_points(session['auth'])
         return render_comment(comment, session)
     except NotFoundError:
         return Response("Thread not found", status_code=404)
@@ -1126,6 +1195,8 @@ def post(session, thread_id: int):
                 created_at=time()
             )
             votes.insert(vote)
+            # Award point for voting
+            award_points(user_email)
         
         # Return updated vote section
         vote_count = get_vote_count(thread_id)
