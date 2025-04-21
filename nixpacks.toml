@@ -1,5 +1,6 @@
 [phases.setup]
 aptPkgs = ['git']
+cmds = ["chmod +x v6.py"]
 
 [start]
 cmd = "python v6.py"
